@@ -348,37 +348,144 @@ def compile_results(df, bl_data, lv_data):
     return df2, CP_bl, CP_lv
 
 
+
+def add_intelligence_metrics(df, today=None, near_crit_threshold=1.0):
+    """
+    Adds all intelligence-layer analytics:
+      - Expected % complete
+      - Schedule variance
+      - Critical / near-critical flags
+      - Criticality weights
+      - Remaining duration
+      - Slippage exposure
+      - Intervention value (accelerate-worthiness)
+
+    Assumes df already has baseline CPM (ES_BL, EF_BL, Float_BL)
+    and live CPM (ES_LV, EF_LV, Float_LV).
+    """
+
+    df = df.copy()
+
+    # --------------------------------------------------------------------
+    # 1. Expected % Complete (EPC)
+    # --------------------------------------------------------------------
+    if today is None:
+        today = pd.Timestamp.today().normalize()
+
+    # Compute duration as baseline unless blank, then use live
+    dur = df["Dur_BL"].fillna(df["Duration"]).replace(0, np.nan)
+
+    # Time-based expected progress
+    elapsed = (today - df["Baseline Start"]).dt.days.clip(lower=0)
+    total   = dur
+
+    expected_pct = elapsed / total
+    expected_pct = expected_pct.clip(lower=0, upper=1).fillna(0)
+
+    df["ExpectedPct"] = expected_pct
+
+    # --------------------------------------------------------------------
+    # 2. Schedule Variance
+    # --------------------------------------------------------------------
+    df["ScheduleVariance"] = df["PercentComplete"] - df["ExpectedPct"]
+
+    # --------------------------------------------------------------------
+    # 3. Criticality Flags (Baseline & Live)
+    # --------------------------------------------------------------------
+    def near_zero(x, eps=1e-6):
+        return pd.notnull(x) and abs(x) < eps
+
+    df["IsCritical_BL"] = df["Float_BL"].apply(near_zero)
+    df["IsCritical_LV"] = df["Float_LV"].apply(near_zero)
+
+    df["BecameCritical"] = (~df["IsCritical_BL"]) & (df["IsCritical_LV"])
+
+    # Near-critical: float between (0, threshold]
+    df["IsNearCritical_LV"] = df["Float_LV"].apply(
+        lambda x: pd.notnull(x) and (x > 0) and (x <= near_crit_threshold)
+    )
+
+    # --------------------------------------------------------------------
+    # 4. Criticality Weight (for exposure scoring)
+    # --------------------------------------------------------------------
+    def crit_weight(row):
+        if row["IsCritical_LV"]:
+            return 1.0
+        if row["IsNearCritical_LV"]:
+            return 0.6
+        return 0.1
+
+    df["CriticalityWeight"] = df.apply(crit_weight, axis=1)
+
+    # --------------------------------------------------------------------
+    # 5. Remaining Duration (live)
+    # --------------------------------------------------------------------
+    # If no Duration field exists, use Dur_BL
+    live_dur = df["Duration"].fillna(df["Dur_BL"])
+
+    df["RemainingDuration"] = (1 - df["PercentComplete"].clip(0, 1)) * live_dur
+
+    # --------------------------------------------------------------------
+    # 6. Slippage Exposure Score
+    # --------------------------------------------------------------------
+    df["SlippageExposure"] = df["RemainingDuration"] * df["CriticalityWeight"]
+
+    # --------------------------------------------------------------------
+    # 7. Intervention Value
+    # --------------------------------------------------------------------
+    df["InterventionValue"] = (
+        df["IsCritical_LV"] &
+        (df["PercentComplete"] < 1.0)
+    ).astype(int)
+
+    return df
+
+
 # ---------------------------------------------------------
 # EXPORTED ENTRY POINT
 # ---------------------------------------------------------
 
 def compute_dual_cpm_from_df(df_input):
     """
-    Main entry after CSV or PSPLIB ingestion.
-    Processes DF, runs baseline + live CPM, returns computed DF.
+    Full pipeline:
+      1. Normalize DF structure
+      2. Compute baseline CPM
+      3. Compute live CPM
+      4. Merge results
+      5. Add intelligence metrics
     """
 
+    # ---------------------------------------------------------
+    # 1. Normalize input dataframe
+    # ---------------------------------------------------------
     df = process_uploaded_dataframe(df_input)
 
-    # 🔥 ADD THIS LINE — debug duration mismatch
-    print("\n=== DEBUG: Columns entering CPM ===")
-    print(df.columns.tolist())
-    print(df.head(20).to_string())
-    print("=== END DEBUG ===\n")
-
-    # Live remaining duration (default)
-    df["Remaining_LV"] = df["Dur_BL"] * (1 - df["PercentComplete"] / 100)
-
-    # Baseline graph
+    # ---------------------------------------------------------
+    # 2. Baseline CPM
+    # ---------------------------------------------------------
     nodes_bl, durations_bl, edges_from_bl, edges_to_bl = build_graph(df, mode="baseline")
     es_bl, ef_bl, ls_bl, lf_bl, tf_bl = compute_cpm(nodes_bl, durations_bl, edges_from_bl, edges_to_bl)
+    bl_cp = [n for n in nodes_bl if tf_bl[n] == 0]
 
-    # Live graph
+    bl_data = (es_bl, ef_bl, ls_bl, lf_bl, tf_bl, bl_cp)
+
+    # ---------------------------------------------------------
+    # 3. Live CPM
+    # ---------------------------------------------------------
     nodes_lv, durations_lv, edges_from_lv, edges_to_lv = build_graph(df, mode="live")
     es_lv, ef_lv, ls_lv, lf_lv, tf_lv = compute_cpm(nodes_lv, durations_lv, edges_from_lv, edges_to_lv)
+    lv_cp = [n for n in nodes_lv if tf_lv[n] == 0]
 
-    # Pack tuples for compiler
-    bl_data = (es_bl, ef_bl, ls_bl, lf_bl, tf_bl, [n for n in nodes_bl if tf_bl[n] == 0])
-    lv_data = (es_lv, ef_lv, ls_lv, lf_lv, tf_lv, [n for n in nodes_lv if tf_lv[n] == 0])
+    lv_data = (es_lv, ef_lv, ls_lv, lf_lv, tf_lv, lv_cp)
 
-    return compile_results(df, bl_data, lv_data)
+    # ---------------------------------------------------------
+    # 4. Merge into results dataframe
+    # ---------------------------------------------------------
+    df = compile_results(df, bl_data, lv_data)
+
+    # ---------------------------------------------------------
+    # 5. Intelligence Layer (derived analytics)
+    # ---------------------------------------------------------
+    df = add_intelligence_metrics(df)
+
+    return df
