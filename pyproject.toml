@@ -1,0 +1,21 @@
+[project]
+name = "critical_path"
+version = "0.1.0"
+description = "Dual CPM engine with PSPLIB support and predictive extensions"
+authors = [
+  { name = "Vivek M.", email = "placeholder@example.com" }
+]
+requires-python = ">=3.9"
+readme = "README.md"
+
+dependencies = [
+    "pandas",
+    "networkx",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

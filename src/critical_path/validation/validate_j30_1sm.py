@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from scripts.psplib_parsing.psplib_loader import sm_to_cpm_df
-from dual_cpm_csv import compute_dual_cpm_from_df
+from src.critical_path.psplib.psplib_loader import sm_to_cpm_df
+from src.critical_path.cpm.dual_cpm_csv import compute_dual_cpm_from_df
 
 
 def check_critical_path_monotonic(df: pd.DataFrame, cp_nodes):
@@ -68,7 +68,7 @@ def main():
     if len(sys.argv) > 1:
         j30_dir = Path(sys.argv[1])
     else:
-        # default relative path: ../j30 from scripts/
+        # default relative path: ../j30 from critical_path/
         j30_dir = Path(__file__).resolve().parent.parent / "j30"
 
     if not j30_dir.exists():

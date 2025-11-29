@@ -1,8 +1,8 @@
 import os
-from scripts.psplib_parsing.psplib_loader import sm_to_cpm_df
-from dual_cpm_csv import compute_dual_cpm_from_df
-from scripts.psplib_parsing.loader import load_j30_optima
-from scripts.psplib_parsing.loader import parse_instance_number
+from src.critical_path.psplib.psplib_loader import sm_to_cpm_df
+from src.critical_path.cpm.dual_cpm_csv import compute_dual_cpm_from_df
+from src.critical_path.psplib.loader import load_j30_optima
+from src.critical_path.psplib.loader import parse_instance_number
 
 def validate_folder(sm_folder, opt_path="j30opt.sm"):
     opt = load_j30_optima(opt_path)
