@@ -91,9 +91,3 @@ def render_executive_overview(df):
 
     st.write("\n".join(bullet))
 
-
-from critical_path.cpm.dual_cpm_csv import compute_dual_cpm_from_df
-df = pd.read_csv(
-    "/Users/vivekmagar/PycharmProjects/critical_path_git/synthetic_schedules/schedule1.csv",
-    parse_dates=["Start", "Finish", "Baseline Start", "Baseline Finish"]
-)
