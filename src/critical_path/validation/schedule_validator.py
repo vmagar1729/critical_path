@@ -205,4 +205,4 @@ df = pd.read_csv(
     "/Users/vivekmagar/PycharmProjects/critical_path_git/synthetic_schedules/schedule1.csv",
     parse_dates=["Start", "Finish", "Baseline Start", "Baseline Finish"]
 )
-validate_and_export(compute_dual_cpm_from_df(df))
+compute_dual_cpm_from_df(df)
