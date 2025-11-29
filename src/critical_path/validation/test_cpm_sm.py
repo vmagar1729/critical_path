@@ -1,5 +1,5 @@
 from src.critical_path.psplib.psplib_loader import sm_to_cpm_df
-from dual_cpm_csv import compute_dual_cpm_from_df
+from src.critical_path.cpm.dual_cpm_csv import compute_dual_cpm_from_df
 
 df = sm_to_cpm_df("/j30/j301_1.sm")
 res_df, bl_cp, lv_cp = compute_dual_cpm_from_df(df)
