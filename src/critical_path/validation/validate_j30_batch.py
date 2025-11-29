@@ -1,7 +1,7 @@
 import os
 import pandas as pd
-from src.critical_path.psplib.psplib_loader import sm_to_cpm_df, load_j30_optimal_durations
-from src.critical_path.cpm.dual_cpm_csv import compute_dual_cpm_from_df
+from critical_path.psplib.psplib_loader import sm_to_cpm_df, load_j30_optimal_durations
+from critical_path.cpm.dual_cpm_csv import compute_dual_cpm_from_df
 
 # Detect directory holding the j30 files
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
