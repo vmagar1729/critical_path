@@ -145,3 +145,27 @@ def sm_to_cpm_df(sm_path, baseline_start="2025-01-01"):
     df["Name"] = df["TaskID"].apply(lambda x: f"Task {x}")
 
     return df
+
+def load_j30_optimal_durations(opt_path):
+    """
+    Parse j30opt.sm containing the optimal makespan for each j30 instance.
+    Returns: dict { "j301_1.sm": 37, "j301_2.sm": 41, ... }
+    """
+    opt = {}
+    with open(opt_path, "r") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("*"):
+                continue
+
+            # Format example:
+            # j301_1.sm    37
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].lower().endswith(".sm"):
+                fname = parts[0]
+                try:
+                    duration = int(parts[1])
+                    opt[fname] = duration
+                except ValueError:
+                    continue
+    return opt
