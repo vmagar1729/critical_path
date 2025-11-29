@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from psplib_loader import sm_to_cpm_df
+from scripts.psplib_parsing.psplib_loader import sm_to_cpm_df
 from dual_cpm_csv import compute_dual_cpm_from_df
 
 
