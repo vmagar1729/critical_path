@@ -146,26 +146,43 @@ def sm_to_cpm_df(sm_path, baseline_start="2025-01-01"):
 
     return df
 
+import re
+
 def load_j30_optimal_durations(opt_path):
     """
-    Parse j30opt.sm containing the optimal makespan for each j30 instance.
-    Returns: dict { "j301_1.sm": 37, "j301_2.sm": 41, ... }
+    Parse j30opt.sm containing optimal makespans for all J30 instances.
+
+    File format lines (after header):
+        set_id   instance_id   optimal_makespan   cpu_time
+
+    We map each (set_id, instance_id) pair to a filename like:
+        j301_1.sm, j301_2.sm, ..., j3048_10.sm
+
+    Returns:
+        dict: { "j301_1.sm": 62, "j301_2.sm": 39, ..., "j3048_10.sm": 54 }
     """
-    opt = {}
+    optima = {}
+
     with open(opt_path, "r") as f:
         for raw in f:
             line = raw.strip()
-            if not line or line.startswith("*"):
+            if not line or not line[0].isdigit():
+                # skip headers / separators
                 continue
 
-            # Format example:
-            # j301_1.sm    37
             parts = line.split()
-            if len(parts) >= 2 and parts[0].lower().endswith(".sm"):
-                fname = parts[0]
-                try:
-                    duration = int(parts[1])
-                    opt[fname] = duration
-                except ValueError:
-                    continue
-    return opt
+            if len(parts) < 3:
+                continue
+
+            try:
+                set_id = int(parts[0])       # 1..48
+                inst_id = int(parts[1])      # 1..10
+                makespan = int(parts[2])     # optimal project duration
+            except ValueError:
+                continue
+
+            # Match your file naming: j30{set_id}_{inst_id}.sm
+            fname = f"j30{set_id}_{inst_id}.sm"
+            optima[fname] = makespan
+
+    return optima
