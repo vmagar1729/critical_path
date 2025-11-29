@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from collections import defaultdict, deque
 import datetime
+import re
 
 
 # ---------------------------------------------------------
@@ -69,6 +70,63 @@ def build_hierarchy(df):
 
     return df
 
+def parse_predecessor_cell(cell):
+    """
+    Parse a Predecessors cell like:
+      "5"
+      "5FS+3d"
+      "12SS-2"
+      "7FF+1d, 9SS"
+    into a list of tuples:
+      [(5, "FS", 0.0), (12, "SS", -2.0), ...]
+    """
+
+    if cell is None:
+        return []
+
+    text = str(cell).strip()
+    if not text:
+        return []
+
+    parts = re.split(r"[;,]", text)
+
+    results = []
+    pattern = re.compile(
+        r"""
+        ^\s*
+        (?P<pred>\d+)
+        \s*
+        (?P<type>FS|SS|FF|SF)?    # optional type
+        \s*
+        (?P<lag>[+-]\s*\d+)?      # optional +N or -N
+        \s*[dD]?                  # optional 'd'
+        \s*$
+        """,
+        re.VERBOSE,
+    )
+
+    for raw in parts:
+        s = raw.strip()
+        if not s:
+            continue
+        m = pattern.match(s)
+        if not m:
+            # Fallback: if it's just a number, treat as FS+0
+            if s.isdigit():
+                results.append((int(s), "FS", 0.0))
+            continue
+
+        pred = int(m.group("pred"))
+        dep_type = m.group("type") or "FS"
+        lag_str = m.group("lag")
+        if lag_str:
+            lag = float(lag_str.replace(" ", ""))
+        else:
+            lag = 0.0
+
+        results.append((pred, dep_type, lag))
+
+    return results
 
 # ---------------------------------------------------------
 # GRAPH CONSTRUCTION (Baseline or Live)
@@ -76,103 +134,176 @@ def build_hierarchy(df):
 
 def build_graph(df, mode="baseline"):
     """
-    Constructs a DAG for CPM based on Baseline or Live durations.
-    mode = "baseline" or "live"
+    Build a dependency-aware DAG:
+
+    nodes: set of task IDs
+    durations: dict {task_id: duration_in_days}
+    edges_from: dict {pred: [(succ, dep_type, lag), ...]}
+    edges_to:   dict {succ: [(pred, dep_type, lag), ...]}
+
+    mode:
+      "baseline" → use Dur_BL
+      "live"     → use Remaining_LV (fallback to Dur_BL if missing)
     """
 
-    # Duration selector
+    # Duration source
     if mode == "baseline":
-        dur_field = "Dur_BL"
+        dur_series = df["Dur_BL"]
+    elif mode == "live":
+        if "Remaining_LV" in df.columns:
+            dur_series = df["Remaining_LV"].fillna(df["Dur_BL"])
+        else:
+            dur_series = df["Dur_BL"]
     else:
-        dur_field = "Remaining_LV"
+        raise ValueError(f"Unknown mode: {mode}")
 
-    G = defaultdict(list)
     durations = {}
-
     for _, row in df.iterrows():
         tid = int(row["TaskID"])
-        durations[tid] = float(row.get(dur_field, 0))
+        d = float(dur_series.loc[row.name])
+        if d < 0:
+            d = 0.0
+        durations[tid] = d
 
-        preds_raw = row["Predecessors"]
-        if preds_raw.strip() == "":
-            continue
+    nodes = sorted(durations.keys())
 
-        preds = [int(p) for p in preds_raw.replace(";", ",").split(",") if p.strip().isdigit()]
-        for p in preds:
-            G[p].append(tid)
+    edges_from = defaultdict(list)
+    edges_to = defaultdict(list)
 
-    return {"edges": G, "durations": durations}
+    for _, row in df.iterrows():
+        succ = int(row["TaskID"])
+        preds = parse_predecessor_cell(row["Predecessors"])
+        for pred, dep_type, lag in preds:
+            if pred not in durations:
+                # ignore invalid preds here; your validator will catch them
+                continue
+            edges_from[pred].append((succ, dep_type, lag))
+            edges_to[succ].append((pred, dep_type, lag))
 
+    return nodes, durations, edges_from, edges_to
 
 # ---------------------------------------------------------
 # CPM ALGORITHM
 # ---------------------------------------------------------
 
-def compute_cpm(G):
+def compute_cpm(nodes, durations, edges_from, edges_to):
     """
-    G = {edges: {u:[v...]}, durations:{task:dur}}
-    Returns ES, EF, LS, LF, Float, CP list.
+    Compute ES/EF/LS/LF/Float on a DAG with typed, lagged dependencies.
+
+    nodes: list of task IDs
+    durations: {task: duration}
+    edges_from: {pred: [(succ, type, lag), ...]}
+    edges_to:   {succ: [(pred, type, lag), ...]}
+
+    Returns:
+      es, ef, ls, lf, total_float
+      each is a dict keyed by task ID
     """
 
-    edges = G["edges"]
-    dur = G["durations"]
-
-    # Build reverse edges
-    rev = defaultdict(list)
-    for u, vs in edges.items():
-        for v in vs:
-            rev[v].append(u)
-
-    tasks = list(dur.keys())
-
-    # Compute indegree for topological sort
-    indeg = {t: 0 for t in tasks}
-    for vs in edges.values():
-        for v in vs:
-            indeg[v] += 1
-
+    # -----------------------------
     # Topological order
-    Q = deque([t for t in tasks if indeg[t] == 0])
+    # -----------------------------
+    indeg = {n: 0 for n in nodes}
+    for succ, preds in edges_to.items():
+        indeg[succ] = len(preds)
+
+    q = deque([n for n in nodes if indeg[n] == 0])
     topo = []
+    while q:
+        n = q.popleft()
+        topo.append(n)
+        for succ, _, _ in edges_from.get(n, []):
+            indeg[succ] -= 1
+            if indeg[succ] == 0:
+                q.append(succ)
 
-    while Q:
-        u = Q.popleft()
-        topo.append(u)
-        for v in edges.get(u, []):
-            indeg[v] -= 1
-            if indeg[v] == 0:
-                Q.append(v)
+    if len(topo) != len(nodes):
+        # Cycle somewhere; your validator should catch that earlier
+        raise ValueError("Graph is not acyclic; cannot compute CPM.")
 
-    # Detect cycle
-    if len(topo) != len(tasks):
-        raise ValueError("Graph contains a cycle. CPM cannot proceed.")
+    # -----------------------------
+    # Forward pass: ES / EF
+    # -----------------------------
+    es = {n: 0.0 for n in nodes}
+    ef = {n: 0.0 for n in nodes}
 
-    # Forward pass (ES/EF)
-    ES = {t: 0 for t in tasks}
-    EF = {t: 0 for t in tasks}
+    # For FF/SF, we may have finish-based constraints
+    max_ef_constraint = {n: 0.0 for n in nodes}
 
-    for t in topo:
-        EF[t] = ES[t] + dur[t]
-        for nxt in edges.get(t, []):
-            ES[nxt] = max(ES[nxt], EF[t])
+    for n in topo:
+        d = durations[n]
+        # respect any FF/SF-based constraints
+        ef[n] = max(es[n] + d, max_ef_constraint[n])
 
-    # Backward pass (LS/LF)
-    proj_end = max(EF.values()) if EF else 0
-    LF = {t: proj_end for t in tasks}
-    LS = {t: proj_end - dur[t] for t in tasks}
+        for succ, dep_type, lag in edges_from.get(n, []):
+            if dep_type == "FS":
+                cand_es = ef[n] + lag
+                es[succ] = max(es.get(succ, 0.0), cand_es)
 
-    for t in reversed(topo):
-        for nxt in edges.get(t, []):
-            LF[t] = min(LF[t], LS[nxt])
-        LS[t] = LF[t] - dur[t]
+            elif dep_type == "SS":
+                cand_es = es[n] + lag
+                es[succ] = max(es.get(succ, 0.0), cand_es)
 
-    Float = {t: LS[t] - ES[t] for t in tasks}
+            elif dep_type == "FF":
+                cand_ef = ef[n] + lag
+                max_ef_constraint[succ] = max(max_ef_constraint[succ], cand_ef)
 
-    # Critical path: tasks with zero float along the longest chain
-    CP = [t for t in topo if Float[t] == 0]
+            elif dep_type == "SF":
+                cand_ef = es[n] + lag
+                max_ef_constraint[succ] = max(max_ef_constraint[succ], cand_ef)
 
-    return ES, EF, LS, LF, Float, CP
+            else:
+                # Unknown type → treat as FS
+                cand_es = ef[n] + lag
+                es[succ] = max(es.get(succ, 0.0), cand_es)
 
+    # After forward pass, re-finalize EF for all nodes
+    for n in nodes:
+        d = durations[n]
+        ef[n] = max(es[n] + d, max_ef_constraint[n])
+
+    project_finish = max(ef.values()) if ef else 0.0
+
+    # -----------------------------
+    # Backward pass: LS / LF
+    # -----------------------------
+    lf = {n: project_finish for n in nodes}
+    ls = {n: project_finish - durations[n] for n in nodes}
+
+    # Reverse topological order
+    for n in reversed(topo):
+        d = durations[n]
+        # For each successor constraint, tighten LS/LF of n
+        for succ, dep_type, lag in edges_from.get(n, []):
+            if dep_type == "FS":
+                # S_succ >= F_n + lag  →  F_n <= S_succ - lag
+                lf[n] = min(lf[n], ls[succ] - lag)
+
+            elif dep_type == "SS":
+                # S_succ >= S_n + lag  →  S_n <= S_succ - lag
+                ls[n] = min(ls[n], ls[succ] - lag)
+
+            elif dep_type == "FF":
+                # F_succ >= F_n + lag  →  F_n <= F_succ - lag
+                lf[n] = min(lf[n], lf[succ] - lag)
+
+            elif dep_type == "SF":
+                # F_succ >= S_n + lag  →  S_n <= F_succ - lag
+                ls[n] = min(ls[n], lf[succ] - lag)
+
+            else:
+                # treat unknown as FS
+                lf[n] = min(lf[n], ls[succ] - lag)
+
+        # recompute LS from LF and duration
+        ls[n] = min(ls[n], lf[n] - d)
+
+    # -----------------------------
+    # Total float
+    # -----------------------------
+    total_float = {n: ls[n] - es[n] for n in nodes}
+
+    return es, ef, ls, lf, total_float
 
 # ---------------------------------------------------------
 # COMPILE RESULTS
@@ -239,12 +370,15 @@ def compute_dual_cpm_from_df(df_input):
     df["Remaining_LV"] = df["Dur_BL"] * (1 - df["PercentComplete"] / 100)
 
     # Baseline graph
-    G_bl = build_graph(df, mode="baseline")
-    bl = compute_cpm(G_bl)
+    nodes_bl, durations_bl, edges_from_bl, edges_to_bl = build_graph(df, mode="baseline")
+    es_bl, ef_bl, ls_bl, lf_bl, tf_bl = compute_cpm(nodes_bl, durations_bl, edges_from_bl, edges_to_bl)
 
     # Live graph
-    G_lv = build_graph(df, mode="live")
-    lv = compute_cpm(G_lv)
+    nodes_lv, durations_lv, edges_from_lv, edges_to_lv = build_graph(df, mode="live")
+    es_lv, ef_lv, ls_lv, lf_lv, tf_lv = compute_cpm(nodes_lv, durations_lv, edges_from_lv, edges_to_lv)
 
-    # Compile
-    return compile_results(df, bl, lv)
+    # Pack tuples for compiler
+    bl_data = (es_bl, ef_bl, ls_bl, lf_bl, tf_bl, [n for n in nodes_bl if tf_bl[n] == 0])
+    lv_data = (es_lv, ef_lv, ls_lv, lf_lv, tf_lv, [n for n in nodes_lv if tf_lv[n] == 0])
+
+    return compile_results(df, bl_data, lv_data)
