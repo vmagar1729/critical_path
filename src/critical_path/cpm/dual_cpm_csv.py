@@ -322,6 +322,7 @@ def compile_results(df, bl_data, lv_data):
     df2["BL_LF"] = df2["TaskID"].map(LF_bl)
     df2["BL_Float"] = df2["TaskID"].map(Float_bl)
     df2["BL_Critical"] = df2["TaskID"].isin(CP_bl)
+    df2["Float_BL"] = df2["BL_LS"] - df2["BL_ES"]
 
     df2["LV_ES"] = df2["TaskID"].map(ES_lv)
     df2["LV_EF"] = df2["TaskID"].map(EF_lv)
@@ -329,6 +330,7 @@ def compile_results(df, bl_data, lv_data):
     df2["LV_LF"] = df2["TaskID"].map(LF_lv)
     df2["LV_Float"] = df2["TaskID"].map(Float_lv)
     df2["LV_Critical"] = df2["TaskID"].isin(CP_lv)
+    df2["Float_LV"] = df2["LV_LS"] - df2["LV_ES"]
 
     # Expected % complete (based on baseline)
     today = pd.Timestamp.today().normalize()
@@ -466,7 +468,6 @@ def compute_dual_cpm_from_df(df_input):
     nodes_bl, durations_bl, edges_from_bl, edges_to_bl = build_graph(df, mode="baseline")
     es_bl, ef_bl, ls_bl, lf_bl, tf_bl = compute_cpm(nodes_bl, durations_bl, edges_from_bl, edges_to_bl)
     bl_cp = [n for n in nodes_bl if tf_bl[n] == 0]
-
     bl_data = (es_bl, ef_bl, ls_bl, lf_bl, tf_bl, bl_cp)
 
     # ---------------------------------------------------------
@@ -475,13 +476,12 @@ def compute_dual_cpm_from_df(df_input):
     nodes_lv, durations_lv, edges_from_lv, edges_to_lv = build_graph(df, mode="live")
     es_lv, ef_lv, ls_lv, lf_lv, tf_lv = compute_cpm(nodes_lv, durations_lv, edges_from_lv, edges_to_lv)
     lv_cp = [n for n in nodes_lv if tf_lv[n] == 0]
-
     lv_data = (es_lv, ef_lv, ls_lv, lf_lv, tf_lv, lv_cp)
 
     # ---------------------------------------------------------
     # 4. Merge into results dataframe
     # ---------------------------------------------------------
-    df = compile_results(df, bl_data, lv_data)
+    df, _, _ = compile_results(df, bl_data, lv_data)
 
     # ---------------------------------------------------------
     # 5. Intelligence Layer (derived analytics)

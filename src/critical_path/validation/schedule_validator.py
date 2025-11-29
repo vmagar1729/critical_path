@@ -1,5 +1,6 @@
 import pandas as pd
-import numpy as np
+
+from critical_path.cpm.dual_cpm_csv import compute_dual_cpm_from_df
 
 
 # -------------------------------------------------------------------
@@ -198,3 +199,10 @@ def validate_and_export(df, out_csv="schedule_validation_results.csv", status_da
     issues_df = validate_schedule(df, status_date=status_date)
     issues_df.to_csv(out_csv, index=False)
     return issues_df
+
+
+df = pd.read_csv(
+    "/Users/vivekmagar/PycharmProjects/critical_path_git/synthetic_schedules/schedule1.csv",
+    parse_dates=["Start", "Finish", "Baseline Start", "Baseline Finish"]
+)
+validate_and_export(compute_dual_cpm_from_df(df))
