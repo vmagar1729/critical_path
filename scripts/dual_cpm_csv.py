@@ -10,46 +10,49 @@ import datetime
 
 def process_uploaded_dataframe(df_input):
     """
-    Clean and normalize a DataFrame exported from MS Project or generated from PSPLIB loader.
-    Produces a uniform structure required for CPM computation.
+    Clean and normalize a DataFrame exported from MS Project
+    OR generated from PSPLIB loader.
+    Duration is preserved exactly as supplied.
     """
 
     df = df_input.copy()
     df.columns = [c.strip() for c in df.columns]
 
+    # Normalize Duration → Dur_BL
+    if "Duration" in df.columns:
+        df["Dur_BL"] = pd.to_numeric(df["Duration"], errors="coerce")
+    else:
+        raise ValueError("Duration column missing — cannot compute CPM.")
+
+    # Normalize Percent Complete
+    if "% Complete" in df.columns:
+        df["PercentComplete"] = (
+            df["% Complete"]
+            .astype(str)
+            .str.replace("%", "", regex=False)
+            .astype(float)
+        )
+    elif "PercentComplete" in df.columns:
+        df["PercentComplete"] = df["PercentComplete"].astype(float)
+    else:
+        df["PercentComplete"] = 0.0
+
     required = [
-        "TaskID", "Name", "Start", "Finish",
+        "TaskID", "Name",
+        "Start", "Finish",
         "Baseline Start", "Baseline Finish",
-        "Predecessors", "WBS", "Outline Level",
-        "% Complete"
+        "Predecessors",
+        "WBS", "Outline Level",
+        "% Complete", "PercentComplete",
+        "Duration", "Dur_BL"
     ]
+
     missing = [c for c in required if c not in df.columns]
     if missing:
-        raise ValueError(f"CSV is missing required columns: {missing}")
+        raise ValueError(f"Missing required columns: {missing}")
 
-    # Fix percent complete: strip %, convert to float
-    df["PercentComplete"] = (
-        df["% Complete"]
-        .astype(str)
-        .str.replace("%", "", regex=False)
-        .replace("", "0")
-        .astype(float)
-    )
-
-    # Parse date fields
-    date_fields = ["Start", "Finish", "Baseline Start", "Baseline Finish"]
-    for f in date_fields:
-        df[f] = pd.to_datetime(df[f], errors="coerce")
-
-    # Normalize predecessor field
-    df["Predecessors"] = df["Predecessors"].fillna("").astype(str)
-
-    # Duration fields
-    df["Dur_BL"] = (df["Baseline Finish"] - df["Baseline Start"]).dt.days.clip(lower=0)
-    df["Dur_LV"] = (df["Finish"] - df["Start"]).dt.days.clip(lower=0)
-
+    # ⭐ DO NOT drop other columns — keep full DF
     return df
-
 
 # ---------------------------------------------------------
 # WBS HIERARCHY
@@ -225,6 +228,12 @@ def compute_dual_cpm_from_df(df_input):
     """
 
     df = process_uploaded_dataframe(df_input)
+
+    # 🔥 ADD THIS LINE — debug duration mismatch
+    print("\n=== DEBUG: Columns entering CPM ===")
+    print(df.columns.tolist())
+    print(df.head(20).to_string())
+    print("=== END DEBUG ===\n")
 
     # Live remaining duration (default)
     df["Remaining_LV"] = df["Dur_BL"] * (1 - df["PercentComplete"] / 100)

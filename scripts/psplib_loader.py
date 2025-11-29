@@ -67,14 +67,29 @@ def parse_sm_file(path):
             # DURATION SECTION
             # ==========================
             elif state == "dur":
-                # Extract all integers
-                ints = re.findall(r"\d+", line)
-                # Format is: jobnr, mode, duration, r1, r2, ...
-                if len(ints) < 3:
+
+                # Split on whitespace
+                parts = line.split()
+
+                # Reject anything shorter than jobnr mode duration
+                if len(parts) < 3:
                     continue
 
-                job = int(ints[0])
-                dur = int(ints[2])
+                # First token MUST be a job number
+                if not parts[0].isdigit():
+                    continue
+
+                job = int(parts[0])
+
+                # Only accept duration rows for known jobs (from precedence section)
+                if job not in succ_map:
+                    continue
+
+                # Third token MUST be the duration
+                if not parts[2].isdigit():
+                    continue
+
+                dur = int(parts[2])
                 durations[job] = dur
 
     # ================================================
@@ -128,20 +143,5 @@ def sm_to_cpm_df(sm_path, baseline_start="2025-01-01"):
 
     # name column
     df["Name"] = df["TaskID"].apply(lambda x: f"Task {x}")
-
-    df = df[
-        [
-            "TaskID",
-            "Name",
-            "Start",
-            "Finish",
-            "Baseline Start",
-            "Baseline Finish",
-            "Predecessors",
-            "WBS",
-            "Outline Level",
-            "% Complete",
-        ]
-    ]
 
     return df

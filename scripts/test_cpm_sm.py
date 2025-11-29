@@ -1,7 +1,7 @@
 from psplib_loader import sm_to_cpm_df
 from dual_cpm_csv import compute_dual_cpm_from_df
 
-df = sm_to_cpm_df("/Users/vivekmagar/Documents/GitHub/critical_path/test_data/j30/j301_1.sm")
+df = sm_to_cpm_df("/Users/vivekmagar/PycharmProjects/critical_path_git/j30/j301_1.sm")
 res_df, bl_cp, lv_cp = compute_dual_cpm_from_df(df)
 
 cp = [1, 3, 8, 12, 14, 17, 22, 23, 24, 30, 32]
