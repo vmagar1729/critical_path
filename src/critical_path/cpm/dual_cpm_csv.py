@@ -489,3 +489,4 @@ def compute_dual_cpm_from_df(df_input):
     df = add_intelligence_metrics(df)
 
     return df
+
