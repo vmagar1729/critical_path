@@ -1,9 +1,6 @@
 import os, sys
 
-# Absolute directory containing Menu.py
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
-
-# The project root: Menu.py → critical_path → src
 PROJECT_ROOT = os.path.abspath(os.path.join(APP_ROOT, ".."))
 
 if PROJECT_ROOT not in sys.path:
@@ -15,59 +12,34 @@ import numpy as np
 import plotly.express as px
 
 from critical_path.cpm.dual_cpm_csv import compute_dual_cpm_from_df
+from critical_path.cpm.executive_engine import compute_executive_metrics
+
 
 # -----------------------------------------------------------
-# Page config (only if this is the main script)
+# Page config
 # -----------------------------------------------------------
-st.set_page_config(
-    page_title="Executive Project Summary",
-    layout="wide",
-)
+st.set_page_config(page_title="Executive Overview", layout="wide")
+st.title("🧭 Executive Project Overview")
 
-st.title("🧭 Executive Project Summary")
+st.caption("Minimal, visual, sponsor-friendly summary. No jargon. No clutter.")
 
-# st.markdown(
-#     """
-# This page answers three questions your sponsors actually care about:
-#
-# 1. **Are we on track?**
-# 2. **If not, how far behind and who owns the delay?**
-# 3. **Can we realistically make it up with current float?**
-# """
-# )
 
 # -----------------------------------------------------------
-# Upload
+# Load schedule
 # -----------------------------------------------------------
-# uploaded = st.file_uploader("Upload Schedule CSV", type=["csv"])
-#
-# if uploaded is None:
-#     st.info("Upload a CSV exported from MS Project or your generator.")
-#     st.stop()
-#
-# try:
-#     df_raw = pd.read_csv(uploaded)
-# except Exception as e:
-#     st.error(f"Error parsing CSV: {e}")
-#     st.stop()
-
-# Use the central session schedule
 df_raw = st.session_state.get("schedule_df", None)
 
 if df_raw is None:
-    st.warning("No schedule loaded. Please upload a schedule on the Home page.")
+    st.warning("No schedule loaded. Upload one on the Home page.")
     st.stop()
 
-# Fix datetime fields
-date_cols = ["Start", "Finish", "Baseline Start", "Baseline Finish"]
-for c in date_cols:
+for c in ["Start", "Finish", "Baseline Start", "Baseline Finish"]:
     if c in df_raw.columns:
         df_raw[c] = pd.to_datetime(df_raw[c], errors="coerce")
 
-# Owner normalization
 if "Owner" not in df_raw.columns:
     df_raw["Owner"] = "Unassigned"
-df_raw["Owner"] = df_raw["Owner"].fillna("Unassigned").astype(str)
+
 
 # -----------------------------------------------------------
 # Run CPM Engine
@@ -78,260 +50,153 @@ except Exception as e:
     st.error(f"Error computing CPM: {e}")
     st.stop()
 
-# Safety: coerce key numeric fields
-for col in ["BL_EF", "LV_EF", "ScheduleVariance", "SlippageExposure",
-            "Float_LV", "PercentComplete", "ExpectedPct",
-            "Remaining_LV"]:
-    if col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
 
 # -----------------------------------------------------------
-# 1. Are we on track?
+# Compute executive metrics
 # -----------------------------------------------------------
-bl_finish = float(df["BL_EF"].max()) if "BL_EF" in df.columns else np.nan
-lv_finish = float(df["LV_EF"].max()) if "LV_EF" in df.columns else np.nan
+metrics = compute_executive_metrics(df)
 
-if np.isfinite(bl_finish) and np.isfinite(lv_finish):
-    slip_days = lv_finish - bl_finish
-else:
-    slip_days = 0.0
+bl_finish = metrics["bl_finish"]
+lv_finish = metrics["lv_finish"]
+slip = metrics["slip"]
 
-# Status classification
-if slip_days <= 0.5:
-    status_label = "On Track"
-    status_color = "✅"
-    status_desc = "Live finish is at or ahead of baseline."
-elif slip_days <= 3.0:
-    status_label = "At Risk"
-    status_color = "🟡"
-    status_desc = "We are slipping, but still within a manageable window."
-else:
-    status_label = "Behind"
-    status_color = "🔴"
-    status_desc = "Baseline date is in the rearview mirror. This will be noticed."
 
+# -----------------------------------------------------------
+# SECTION 1: Are we on track?
+# -----------------------------------------------------------
 st.markdown("## 1. Overall Status")
 
 c1, c2, c3 = st.columns([2, 2, 3])
 
 with c1:
-    st.metric(
-        "Baseline Finish (days from project start)",
-        f"{bl_finish:.1f}" if np.isfinite(bl_finish) else "N/A",
-    )
+    st.metric("Baseline Finish (days)", f"{bl_finish:.1f}")
 
 with c2:
-    st.metric(
-        "Live Predicted Finish",
-        f"{lv_finish:.1f}" if np.isfinite(lv_finish) else "N/A",
-        delta=f"{slip_days:+.1f} days",
-    )
+    st.metric("Live Finish (days)", f"{lv_finish:.1f}",
+              delta=f"{slip:+.1f} days")
 
 with c3:
     st.markdown(
         f"""
-        ### {status_color} {status_label}  
-        {status_desc}
+        ### {metrics['status_color']} {metrics['status_label']}
+        {metrics['status_desc']}
         """
     )
 
 st.divider()
 
-# -----------------------------------------------------------
-# 2. If we are behind – how much and who owns it?
-# -----------------------------------------------------------
-st.markdown("## 2. Where is the delay, and who owns it?")
 
-if "ScheduleVariance" not in df.columns:
-    st.error("ScheduleVariance not found in DF. Check intelligence layer wiring.")
-    st.stop()
+# -----------------------------------------------------------
+# SECTION 2: If behind — Where? & Who owns it?
+# -----------------------------------------------------------
+st.markdown("## 2. Delay Location & Accountability")
 
-behind_mask = df["ScheduleVariance"] < 0
-behind_df = df[behind_mask].copy()
+behind_df = metrics["behind_df"].copy()
+owner_group = metrics["owner_exposure_df"].copy()
 
 if behind_df.empty:
-    st.success("No tasks are behind schedule. No throats require attention today.")
+    st.success("No tasks behind schedule. Carry on.")
 else:
-    # Default slippage exposure if missing
-    if "SlippageExposure" not in behind_df.columns:
-        behind_df["SlippageExposure"] = (
-            behind_df["Remaining_LV"].fillna(0.0).abs()
-        )
-
-    # Aggregate by Owner
-    owner_group = (
-        behind_df
-        .groupby("Owner", dropna=False)
-        .agg(
-            TasksBehind=("TaskID", "count"),
-            TotalExposure=("SlippageExposure", "sum"),
-            MaxSlip=("ScheduleVariance", lambda x: float(x.min()) if len(x) else np.nan),
-        )
-        .reset_index()
-    )
-
-    # Convert exposure to %
-    total_exposure = owner_group["TotalExposure"].sum()
-    if total_exposure > 0:
-        owner_group["ExposurePct"] = owner_group["TotalExposure"] / total_exposure * 100
-    else:
-        owner_group["ExposurePct"] = 0.0
-
-    # Sort for display
-    owner_group = owner_group.sort_values("TotalExposure", ascending=False)
-
     col_pie, col_table = st.columns([2, 3])
 
     with col_pie:
         st.markdown("### Slippage Exposure by Owner")
-        fig_owner = px.pie(
+        fig = px.pie(
             owner_group,
             names="Owner",
             values="TotalExposure",
+            color="Owner",
+            hole=0.45,
             hover_data=["TasksBehind", "MaxSlip"],
-            hole=0.4,
         )
-        fig_owner.update_traces(textinfo="percent+label")
-        st.plotly_chart(fig_owner, use_container_width=True)
+        fig.update_traces(textinfo="percent+label")
+        st.plotly_chart(fig, use_container_width=True)
 
     with col_table:
-        st.markdown("### Owner Impact Table")
-        pretty_owner = owner_group.copy()
-        pretty_owner["TotalExposure"] = pretty_owner["TotalExposure"].round(1)
-        pretty_owner["MaxSlip"] = pretty_owner["MaxSlip"].round(1)
-        pretty_owner["ExposurePct"] = pretty_owner["ExposurePct"].round(1)
-        st.dataframe(
-            pretty_owner[
-                ["Owner", "TasksBehind", "TotalExposure", "ExposurePct", "MaxSlip"]
-            ]
-        )
+        st.markdown("### Owner Accountability Table")
+        show = owner_group.copy()
+        show["TotalExposure"] = show["TotalExposure"].round(1)
+        show["ExposurePct"] = show["ExposurePct"].round(1)
+        show["MaxSlip"] = show["MaxSlip"].round(1)
+        st.dataframe(show, use_container_width=True)
 
-    # Top delayed tasks
     st.markdown("### Top Delayed Tasks")
 
-    top_tasks = (
-        behind_df
-        .copy()
-        .assign(SlipDays=lambda d: d["ScheduleVariance"] / 100.0 * d["Dur_BL"])
-    )
+    top = behind_df.copy()
+    top["SlipDays"] = (
+        (top["ScheduleVariance"] / 100.0) * top["Dur_BL"]
+    ).fillna(0)
+    top = top.sort_values("SlipDays").head(10)
 
-    # Fallback if Dur_BL missing or zero
-    top_tasks["SlipDays"] = top_tasks["SlipDays"].fillna(0.0)
-    top_tasks = top_tasks.sort_values("ScheduleVariance")  # most negative first
-    top_tasks = top_tasks.head(15)
-
-    fig_tasks = px.bar(
-        top_tasks,
+    fig2 = px.bar(
+        top,
         x="SlipDays",
         y="Name",
         color="Owner",
         orientation="h",
-        hover_data=["TaskID", "PercentComplete", "ExpectedPct"],
+        title="Worst Offenders",
         labels={"SlipDays": "Estimated Days Behind"},
     )
-    fig_tasks.update_layout(yaxis={"categoryorder": "total ascending"})
-    st.plotly_chart(fig_tasks, use_container_width=True)
+    fig2.update_layout(yaxis={"categoryorder": "total ascending"})
+    st.plotly_chart(fig2, use_container_width=True)
 
 st.divider()
 
-st.subheader("📈 Duration Creep Overview")
 
-creep_df = df[df["HasDurationCreep"]]
+# -----------------------------------------------------------
+# SECTION 3: Duration Creep
+# -----------------------------------------------------------
+st.markdown("## 3. Duration Creep (The silent killer)")
 
-colA, colB, colC = st.columns(3)
+creep_df = metrics["creep_df"]
 
-with colA:
-    st.metric(
-        "Tasks with Increased Duration",
-        len(creep_df)
-    )
+cA, cB, cC = st.columns(3)
 
-with colB:
-    st.metric(
-        "Total Added Duration (days)",
-        f"{creep_df['DurationCreep'].sum():.1f}"
-    )
+with cA:
+    st.metric("Tasks with Increased Duration", len(creep_df))
 
-with colC:
-    if len(creep_df) > 0:
-        st.metric(
-            "Max Single-Task Creep",
-            f"{creep_df['DurationCreep'].max():.1f} days"
-        )
-    else:
-        st.metric("Max Single-Task Creep", "0")
+with cB:
+    st.metric("Total Added Duration", f"{creep_df['DurationCreep'].sum():.1f} days")
+
+with cC:
+    m = creep_df["DurationCreep"].max() if len(creep_df) else 0
+    st.metric("Max Single-Task Creep", f"{m:.1f} days")
 
 if len(creep_df) > 0:
-    st.markdown("### Top Offenders (Duration Increased)")
-
     st.dataframe(
         creep_df.sort_values("DurationCreep", ascending=False)[
             ["TaskID", "Name", "Owner", "Dur_BL", "Duration", "DurationCreep"]
-        ]
+        ],
+        use_container_width=True
     )
 else:
     st.success("No duration creep detected.")
 
+st.divider()
+
+
 # -----------------------------------------------------------
-# 3. Can we make it up?
+# SECTION 4: Recovery Feasibility (High-level only)
 # -----------------------------------------------------------
-st.markdown("## 3. Can we realistically recover?")
+st.markdown("## 4. Can We Recover?")
 
-if "Float_LV" not in df.columns:
-    st.error("Float_LV not found. Check CPM computation wiring.")
-    st.stop()
+total_recoverable = metrics["total_recoverable"]
 
-# Recoverable = behind AND positive float
-recoverable_mask = (df["ScheduleVariance"] < 0) & (df["Float_LV"] > 0)
-total_recoverable = float(df.loc[recoverable_mask, "Float_LV"].sum())
+cR1, cR2 = st.columns([1, 3])
 
-if slip_days <= 0.5:
-    recovery_label = "No recovery needed"
-    recovery_msg = (
-        "Live finish is aligned with baseline. Any micro-variances are noise."
-    )
-    recovery_color = "✅"
-elif slip_days > 0 and total_recoverable >= slip_days:
-    recovery_label = "Delay is recoverable using existing float"
-    recovery_msg = (
-        "There is enough slack in non-critical / near-critical tasks to absorb "
-        "the current delay without moving the finish line, if you actually act on it."
-    )
-    recovery_color = "🟢"
-elif slip_days > 0 and 0 < total_recoverable < slip_days:
-    recovery_label = "Partially recoverable"
-    recovery_msg = (
-        f"We can claw back **~{total_recoverable:.1f} days**, but the remaining "
-        f"**~{slip_days - total_recoverable:.1f} days** will require either "
-        "re-sequencing or throwing people/money at the problem."
-    )
-    recovery_color = "🟠"
-else:
-    recovery_label = "Not recoverable with current plan"
-    recovery_msg = (
-        "Float on the network is effectively exhausted. Any meaningful recovery "
-        "will need fast-tracking, scope trade-offs, or acceptance of a later go-live."
-    )
-    recovery_color = "🔴"
+with cR1:
+    st.metric("Slip (days)", f"{slip:.1f}")
+    st.metric("Recoverable Float", f"{total_recoverable:.1f}")
 
-c_rec1, c_rec2 = st.columns([2, 3])
-
-with c_rec1:
-    st.metric("Current Slip (days)", f"{slip_days:.1f}")
-    st.metric("Total Recoverable Float (days)", f"{total_recoverable:.1f}")
-
-with c_rec2:
-    st.markdown(
-        f"""
-        ### {recovery_color} {recovery_label}  
-        {recovery_msg}
-        """
-    )
-#
-# st.divider()
-#
-# # -----------------------------------------------------------
-# # Optional: Raw DF for nerds (i.e., you)
-# # -----------------------------------------------------------
-# with st.expander("Nerd view: full CPM dataframe"):
-#     st.dataframe(df)
+with cR2:
+    if slip <= 0.5:
+        st.success("No recovery needed.")
+    elif total_recoverable >= slip:
+        st.success("Delay is recoverable using existing float.")
+    elif 0 < total_recoverable < slip:
+        st.warning(
+            f"We can recover ~{total_recoverable:.1f} days, but "
+            f"{slip - total_recoverable:.1f} additional days require mitigation."
+        )
+    else:
+        st.error("Not recoverable without re-sequencing or scope decisions.")

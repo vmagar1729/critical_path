@@ -1,9 +1,12 @@
-import os, sys
+# critical_path/pages/03_Analytics.py
 
-# Absolute directory containing Menu.py
+import os
+import sys
+
+# -------------------------------------------------------------------
+# Path bootstrap: same pattern as other pages
+# -------------------------------------------------------------------
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
-
-# The project root: Menu.py → critical_path → src
 PROJECT_ROOT = os.path.abspath(os.path.join(APP_ROOT, ".."))
 
 if PROJECT_ROOT not in sys.path:
@@ -11,172 +14,351 @@ if PROJECT_ROOT not in sys.path:
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
 
-st.set_page_config(page_title="Deep Analytics", layout="wide")
+from critical_path.cpm.dual_cpm_csv import compute_dual_cpm_from_df
+from critical_path.cpm.analytics_engine import (
+    ensure_analytics_fields,
+    compute_kpis,
+    add_float_bucket,
+)
 
-st.title("📊 Deep Analytics Dashboard")
-st.markdown("Advanced project intelligence: slippage, risk clusters, criticality, and intervention priorities.")
+# -------------------------------------------------------------------
+# Page config
+# -------------------------------------------------------------------
+st.set_page_config(
+    page_title="Deep Analytics",
+    layout="wide",
+)
+
+st.title("📊 Deep Project Analytics")
+
+st.caption(
+    "For when the executive summary isn't enough and you actually want to see how the machine behaves."
+)
 
 # -------------------------------------------------------------------
 # Load schedule from session
 # -------------------------------------------------------------------
-if "schedule_df" not in st.session_state or st.session_state["schedule_df"] is None:
-    st.error("No schedule loaded. Please upload a schedule in the Menu page first.")
+df_raw = st.session_state.get("schedule_df", None)
+
+if df_raw is None:
+    st.warning("No schedule loaded. Upload one on the Home/Menu page first.")
     st.stop()
 
-df = st.session_state["schedule_df"]
+# Ensure datetime fields
+for col in ["Start", "Finish", "Baseline Start", "Baseline Finish"]:
+    if col in df_raw.columns:
+        df_raw[col] = pd.to_datetime(df_raw[col], errors="coerce")
 
-# Ensure intelligence layer exists
-required_cols = ["SlippageExposure", "Remaining_LV", "CriticalityWeight",
-                 "Float_LV", "PercentComplete", "ExpectedPct"]
+# Owner normalization
+if "Owner" not in df_raw.columns:
+    df_raw["Owner"] = "Unassigned"
+df_raw["Owner"] = df_raw["Owner"].fillna("Unassigned").astype(str)
 
-missing = [c for c in required_cols if c not in df.columns]
-if missing:
-    st.error(f"Missing intelligence fields: {missing}. Run through CPM Engine first.")
+# -------------------------------------------------------------------
+# Run CPM + Intelligence
+# -------------------------------------------------------------------
+try:
+    df = compute_dual_cpm_from_df(df_raw)
+except Exception as e:
+    st.error(f"Error computing CPM: {e}")
     st.stop()
 
-# -------------------------------------------------------------------
-# 1. SLIPPAGE EXPOSURE TREEMAP (heatmap of risk)
-# -------------------------------------------------------------------
-df["SlippageExposure_safe"] = df["SlippageExposure"].replace(0, 1e-6)
-st.subheader("🔥 Slippage Exposure — Risk Concentration Map")
+# Bring Owner across if the engine dropped it
+if "Owner" not in df.columns and "TaskID" in df_raw.columns:
+    owners = df_raw[["TaskID", "Owner"]].drop_duplicates()
+    df = df.merge(owners, on="TaskID", how="left")
 
-fig1 = px.treemap(
-    df,
-    path=[px.Constant("All Tasks"), "WBS", "Name"],
-    values="SlippageExposure_safe",
-    color="SlippageExposure",
-    color_continuous_scale="Reds",
-    hover_data=["TaskID", "Remaining_LV", "CriticalityWeight"],
-)
-fig1.update_layout(margin=dict(t=30, l=0, r=0, b=0))
+df["Owner"] = df["Owner"].fillna("Unassigned").astype(str)
 
-st.plotly_chart(fig1, use_container_width=True)
-
-st.markdown("""
-**Interpretation:**  
-Large and darker nodes = where schedule danger is concentrated.  
-These are your “risk clusters” — if they slip, the schedule slips.
-""")
-
-st.divider()
+# Enrich with analytics-specific fields
+df = ensure_analytics_fields(df)
+df = add_float_bucket(df)
 
 # -------------------------------------------------------------------
-# 2. SLIPPAGE vs. PROGRESS SCATTER
+# Sidebar filters
 # -------------------------------------------------------------------
-st.subheader("📉 Progress vs. Expected Timeline (Reality Check)")
+st.sidebar.header("Filters")
 
-df["Delta"] = df["PercentComplete"] - (df["ExpectedPct"] * 100)
-
-fig2 = px.scatter(
-    df,
-    x="ExpectedPct",
-    y="PercentComplete",
-    color="Delta",
-    color_continuous_scale="RdBu",
-    hover_data=["TaskID", "Name", "Remaining_LV", "Float_LV"],
-    size="Remaining_LV",
-)
-fig2.add_shape(
-    type="line",
-    x0=0, y0=0,
-    x1=100, y1=100,
-    line=dict(color="gray", dash="dash")
-)
-fig2.update_layout(
-    xaxis_title="Expected % Complete",
-    yaxis_title="Actual % Complete",
-    height=500,
+owners = sorted(df["Owner"].dropna().unique().tolist())
+selected_owners = st.sidebar.multiselect(
+    "Owner",
+    options=owners,
+    default=owners,
 )
 
-st.plotly_chart(fig2, use_container_width=True)
+if "Outline Level" in df.columns:
+    min_lvl = int(df["Outline Level"].min())
+    max_lvl = int(df["Outline Level"].max())
+    sel_min, sel_max = st.sidebar.slider(
+        "Outline Level range",
+        min_value=min_lvl,
+        max_value=max_lvl,
+        value=(min_lvl, max_lvl),
+        step=1,
+    )
+else:
+    sel_min, sel_max = (None, None)
 
-st.markdown("""
-**Interpretation:**  
-- Points **below** the diagonal line = *behind schedule*  
-- Larger bubbles = more remaining work  
-- Redder = deeper behind  
-""")
+status_options = ["All", "On track / ahead", "Behind"]
+sel_status = st.sidebar.selectbox("Status filter", status_options, index=0)
 
-st.divider()
+df_filt = df.copy()
 
-# -------------------------------------------------------------------
-# 3. TOP TASK RISKS (Slippage Exposure Ranking)
-# -------------------------------------------------------------------
-st.subheader("🚨 Highest-Risk Tasks (Top Slippage Exposure)")
+df_filt = df_filt[df_filt["Owner"].isin(selected_owners)]
 
-top_risk = df.sort_values("SlippageExposure", ascending=False).head(15)
-
-st.dataframe(
-    top_risk[[
-        "TaskID", "Name", "WBS", "PercentComplete",
-        "Remaining_LV", "Float_LV", "CriticalityWeight", "SlippageExposure"
-    ]]
-)
-
-st.divider()
-
-# -------------------------------------------------------------------
-# 4. CRITICALITY DISTRIBUTION (Pie Chart)
-# -------------------------------------------------------------------
-st.subheader("🎯 Criticality Distribution")
-
-crit_data = pd.DataFrame({
-    "Status": ["Critical", "Near Critical", "Safe"],
-    "Count": [
-        df["IsCritical_LV"].sum(),
-        df["IsNearCritical_LV"].sum(),
-        len(df) - df["IsCritical_LV"].sum() - df["IsNearCritical_LV"].sum(),
+if sel_min is not None and sel_max is not None and "Outline Level" in df_filt.columns:
+    df_filt = df_filt[
+        (df_filt["Outline Level"] >= sel_min)
+        & (df_filt["Outline Level"] <= sel_max)
     ]
-})
 
-fig3 = px.pie(
-    crit_data,
-    names="Status",
-    values="Count",
-    color="Status",
-    color_discrete_map={
-        "Critical": "red",
-        "Near Critical": "orange",
-        "Safe": "green"
-    }
-)
-fig3.update_traces(textposition='inside', textinfo='percent+label')
+if sel_status != "All":
+    behind_mask = df_filt["ScheduleVariance"] < 0
+    if sel_status == "Behind":
+        df_filt = df_filt[behind_mask]
+    else:
+        df_filt = df_filt[~behind_mask]
 
-st.plotly_chart(fig3, use_container_width=True)
+# -------------------------------------------------------------------
+# KPI strip
+# -------------------------------------------------------------------
+kpi = compute_kpis(df_filt)
+
+c1, c2, c3, c4, c5 = st.columns(5)
+
+with c1:
+    st.metric("Total tasks", kpi["total_tasks"])
+
+with c2:
+    st.metric("Tasks behind", kpi["behind_tasks"])
+
+with c3:
+    st.metric("Critical tasks", kpi["critical_tasks"])
+
+with c4:
+    st.metric("Avg % complete", f"{kpi['avg_percent_complete']:.1f}%")
+
+with c5:
+    st.metric("Remaining work (days)", f"{kpi['total_remaining']:.1f}")
 
 st.divider()
 
 # -------------------------------------------------------------------
-# 5. RECOVERY PRIORITIZATION — THE “FIX FIRST” TASKS
+# Layout: three analytical panels
 # -------------------------------------------------------------------
-st.subheader("🛠️ Highest-Impact Recovery Targets")
-
-priority = df.sort_values("SlippageExposure", ascending=False).head(10)
-
-fig4 = px.bar(
-    priority,
-    x="Name",
-    y="SlippageExposure",
-    color="CriticalityWeight",
-    color_continuous_scale="RdYlGn_r",
-    hover_data=["TaskID", "PercentComplete", "Remaining_LV", "Float_LV"],
-)
-fig4.update_layout(
-    xaxis_title="Task",
-    yaxis_title="Recovery Impact Score",
-    height=450
+tab1, tab2, tab3 = st.tabs(
+    ["Progress & Health", "Float & Criticality", "Owner & WBS View"]
 )
 
-st.plotly_chart(fig4, use_container_width=True)
+# -------------------------------------------------------------------
+# TAB 1: Progress & Health
+# -------------------------------------------------------------------
+with tab1:
+    col_a, col_b = st.columns([3, 2])
 
-st.markdown("""
-These are the **10 tasks that give you the most schedule recovery per unit effort**.  
-Accelerate these, and the whole project stabilizes fastest.
-""")
+    with col_a:
+        st.subheader("Planned vs Actual Progress")
+
+        if "PercentComplete" in df_filt.columns and "ExpectedPct" in df_filt.columns:
+            scatter_df = df_filt.copy()
+            scatter_df["ExpectedPct"] = scatter_df["ExpectedPct"].clip(0, 100)
+            scatter_df["PercentComplete"] = scatter_df["PercentComplete"].clip(0, 100)
+
+            fig_scatter = px.scatter(
+                scatter_df,
+                x="ExpectedPct",
+                y="PercentComplete",
+                color="Owner",
+                hover_data=["TaskID", "Name"],
+                labels={
+                    "ExpectedPct": "Planned % complete",
+                    "PercentComplete": "Actual % complete",
+                },
+            )
+            fig_scatter.add_shape(
+                type="line",
+                x0=0,
+                y0=0,
+                x1=100,
+                y1=100,
+                line=dict(dash="dash"),
+            )
+            fig_scatter.update_layout(margin=dict(l=20, r=20, t=40, b=20))
+            st.plotly_chart(fig_scatter, use_container_width=True)
+        else:
+            st.info("ExpectedPct / PercentComplete not available for this dataset.")
+
+    with col_b:
+        st.subheader("Status distribution")
+
+        if "ScheduleVariance" in df_filt.columns:
+            status_df = df_filt.copy()
+            status_df["Status"] = np.where(
+                status_df["ScheduleVariance"] < 0, "Behind", "On / Ahead"
+            )
+            status_counts = (
+                status_df.groupby("Status")["TaskID"].count().reset_index()
+            )
+
+            if not status_counts.empty:
+                fig_pie = px.pie(
+                    status_counts,
+                    names="Status",
+                    values="TaskID",
+                    hole=0.45,
+                )
+                fig_pie.update_traces(textinfo="percent+label")
+                fig_pie.update_layout(margin=dict(l=20, r=20, t=40, b=20))
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.info("No tasks in current filter selection.")
+        else:
+            st.info("ScheduleVariance not available for this dataset.")
+
+    st.markdown("### Duration Creep")
+
+    creep_df = df_filt[df_filt.get("HasDurationCreep", False)]
+
+    if creep_df.empty:
+        st.success("No tasks with increased duration vs baseline in this filter.")
+    else:
+        col_c1, col_c2 = st.columns([2, 3])
+
+        with col_c1:
+            st.metric(
+                "Tasks with duration increase",
+                len(creep_df),
+            )
+            st.metric(
+                "Total added duration (days)",
+                f"{creep_df['DurationCreep'].sum():.1f}",
+            )
+
+        with col_c2:
+            top_creep = creep_df.sort_values("DurationCreep", ascending=False).head(15)
+            fig_creep = px.bar(
+                top_creep,
+                x="DurationCreep",
+                y="Name",
+                color="Owner",
+                orientation="h",
+                labels={"DurationCreep": "Added days vs baseline"},
+            )
+            fig_creep.update_layout(
+                yaxis={"categoryorder": "total ascending"},
+                margin=dict(l=20, r=20, t=40, b=20),
+            )
+            st.plotly_chart(fig_creep, use_container_width=True)
 
 # -------------------------------------------------------------------
-# END OF DASHBOARD
+# TAB 2: Float & Criticality
 # -------------------------------------------------------------------
+with tab2:
+    col_f1, col_f2 = st.columns([2, 3])
+
+    with col_f1:
+        st.subheader("Float distribution")
+
+        if "FloatBucket" in df_filt.columns:
+            fb = (
+                df_filt.groupby("FloatBucket")["TaskID"]
+                .count()
+                .reset_index()
+                .sort_values("TaskID", ascending=False)
+            )
+            fig_float = px.bar(
+                fb,
+                x="FloatBucket",
+                y="TaskID",
+                labels={"TaskID": "Tasks"},
+                title="Tasks by live float bucket",
+            )
+            fig_float.update_layout(margin=dict(l=20, r=20, t=40, b=20))
+            st.plotly_chart(fig_float, use_container_width=True)
+        else:
+            st.info("Float information not available.")
+
+    with col_f2:
+        st.subheader("Slippage exposure vs float")
+
+        if "SlippageExposure" in df_filt.columns and "Float_LV" in df_filt.columns:
+            heat_df = df_filt.copy()
+            heat_df["FloatBucket"] = heat_df.get("FloatBucket", "Unknown")
+
+            agg = (
+                heat_df.groupby(["Owner", "FloatBucket"])["SlippageExposure"]
+                .sum()
+                .reset_index()
+            )
+
+            if not agg.empty:
+                fig_heat = px.density_heatmap(
+                    agg,
+                    x="FloatBucket",
+                    y="Owner",
+                    z="SlippageExposure",
+                    color_continuous_scale="Reds",
+                    labels={"SlippageExposure": "Exposure"},
+                )
+                fig_heat.update_layout(margin=dict(l=20, r=20, t=40, b=40))
+                st.plotly_chart(fig_heat, use_container_width=True)
+            else:
+                st.info("No slippage exposure in current filter selection.")
+        else:
+            st.info("SlippageExposure / Float_LV missing.")
+
+# -------------------------------------------------------------------
+# TAB 3: Owner & WBS View
+# -------------------------------------------------------------------
+with tab3:
+    st.subheader("Remaining work by Owner")
+
+    if "Remaining_LV" in df_filt.columns:
+        by_owner = (
+            df_filt.groupby("Owner")["Remaining_LV"]
+            .sum()
+            .reset_index()
+            .sort_values("Remaining_LV", ascending=False)
+        )
+
+        if not by_owner.empty:
+            fig_owner = px.bar(
+                by_owner,
+                x="Owner",
+                y="Remaining_LV",
+                title="Remaining live duration by Owner",
+                labels={"Remaining_LV": "Days"},
+            )
+            fig_owner.update_layout(margin=dict(l=20, r=20, t=40, b=20))
+            st.plotly_chart(fig_owner, use_container_width=True)
+        else:
+            st.info("No remaining work in current filter selection.")
+    else:
+        st.info("Remaining_LV missing; analytics engine did not compute it.")
+
+    st.markdown("### WBS Treemap")
+
+    if "WBS" in df_filt.columns and "SlippageExposure" in df_filt.columns:
+        treemap_df = df_filt.copy()
+        treemap_df["WBS"] = treemap_df["WBS"].astype(str)
+
+        fig_tree = px.treemap(
+            treemap_df,
+            path=["WBS", "Owner", "Name"],
+            values="SlippageExposure",
+            color="Owner",
+            title="Slippage exposure by WBS / Owner / Task",
+        )
+        fig_tree.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+        st.plotly_chart(fig_tree, use_container_width=True)
+    else:
+        st.info("WBS or SlippageExposure missing; treemap not available.")
+
+# -------------------------------------------------------------------
+# Nerd view
+# -------------------------------------------------------------------
+with st.expander("Nerd view: full analytics dataframe"):
+    st.dataframe(df_filt, use_container_width=True)
