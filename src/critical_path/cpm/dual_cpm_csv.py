@@ -28,8 +28,14 @@ def process_uploaded_dataframe(df_input: pd.DataFrame) -> pd.DataFrame:
     if "TaskID" not in df.columns:
         raise ValueError("Missing required column: 'TaskID'")
     df["TaskID"] = pd.to_numeric(df["TaskID"], errors="coerce")
+
     if df["TaskID"].isna().any():
-        raise ValueError("Some TaskID values could not be converted to numeric.")
+        bad = df[df["TaskID"].isna()][["TaskID", "Name"]].head()
+        raise ValueError(
+            "Non-numeric TaskID values found. Example rows:\n"
+            f"{bad.to_string(index=False)}"
+        )
+    df["TaskID"] = df["TaskID"].astype(int)
 
     # ---- Duration / Dur_BL ----
     if "Duration" not in df.columns:
