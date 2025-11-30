@@ -1,104 +1,65 @@
-import os, sys
-
-# Absolute directory containing Menu.py
-APP_ROOT = os.path.dirname(os.path.abspath(__file__))
-
-# The project root: Menu.py → critical_path → src
-PROJECT_ROOT = os.path.abspath(os.path.join(APP_ROOT, ".."))
-
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
-
 import streamlit as st
 import pandas as pd
-import numpy as np
 
 from critical_path.validation.schedule_validator import validate_schedule
-from critical_path.cpm.dual_cpm_csv import process_uploaded_dataframe
 
-st.set_page_config(
-    page_title="Schedule Validator",
-    layout="wide"
-)
 
-st.title("🔍 Schedule Validator")
-st.caption("Ensure your schedule is structurally sound before running analysis.")
+st.set_page_config(page_title="Schedule Validator", layout="wide")
+st.title("🩺 Schedule Validator (DO THIS FIRST)")
 
-# uploaded = st.file_uploader("Upload Schedule CSV for Validation", type=["csv"])
-#
-# if uploaded is None:
-#     st.info("Upload a CSV to begin validation.")
-#     st.stop()
-#
-# # Read CSV
-# try:
-#     df_raw = pd.read_csv(uploaded)
-# except Exception as e:
-#     st.error(f"Error loading CSV: {e}")
-#     st.stop()
 
-# Use the central session schedule
-df_raw = st.session_state.get("schedule_df", None)
-
-if df_raw is None:
-    st.warning("No schedule loaded. Please upload a schedule on the Home page.")
+# -----------------------------------------------------
+# Require the user to upload schedule in Menu
+# -----------------------------------------------------
+if "schedule_df" not in st.session_state or st.session_state["schedule_df"] is None:
+    st.warning("⚠️ Please upload a schedule using the **Menu** page first.")
     st.stop()
 
-# Fix datetimes
-for c in ["Start", "Finish", "Baseline Start", "Baseline Finish"]:
-    if c in df_raw.columns:
-        df_raw[c] = pd.to_datetime(df_raw[c], errors="coerce")
+df = st.session_state["schedule_df"].copy()
+schedule_name = st.session_state.get("schedule_name", "(Unnamed Schedule)")
 
-# Normalize structure (reuses CPM logic)
-try:
-    df_clean = process_uploaded_dataframe(df_raw)
-except Exception as e:
-    st.error(f"Validation cannot proceed: {e}")
+st.markdown(f"### Validating: **{schedule_name}**")
+
+
+# -----------------------------------------------------
+# Run validator engine
+# -----------------------------------------------------
+issues = validate_schedule(df)
+
+if not issues:
+    st.success("🎉 No scheduling issues detected. Your plan is frighteningly clean!")
     st.stop()
 
-# Run validator
-try:
-    issues = validate_schedule(df_clean)
-except Exception as e:
-    st.error(f"Error while running validator: {e}")
-    st.stop()
+df_issues = pd.DataFrame(issues)
 
-st.success("Validation completed.")
 
-# Split: critical vs. warnings
-critical = issues[issues["Severity"] == "CRITICAL"]
-warnings = issues[issues["Severity"] == "WARNING"]
+# -----------------------------------------------------
+# Group by severity
+# -----------------------------------------------------
+severity_order = ["critical", "error", "warning", "minor"]
 
-# Summary
-col1, col2 = st.columns(2)
-col1.metric("Critical Issues", len(critical))
-col2.metric("Warnings", len(warnings))
+st.markdown("## 🧹 Validation Results")
 
-st.divider()
+for sev in severity_order:
+    subset = df_issues[df_issues["Severity"] == sev]
+    if subset.empty:
+        continue
 
-# Critical issues
-st.subheader("❌ Critical Issues")
-if critical.empty:
-    st.success("No critical issues found.")
-else:
-    st.error("These issues may break the schedule calculations.")
-    st.dataframe(critical)
+    header = {
+        "critical": "🔴 **Critical Issues** — must be fixed or CPM fails",
+        "error": "🟠 **Errors** — will cause downstream problems",
+        "warning": "🟡 **Warnings** — recommended cleanup",
+        "minor": "🟢 **Minor Notes** — optional polish",
+    }.get(sev, sev)
 
-# Warnings
-st.subheader("⚠️ Warnings (Good to Have Fixes)")
-if warnings.empty:
-    st.success("No warnings.")
-else:
-    st.warning("These issues won’t break CPM, but should be cleaned up.")
-    st.dataframe(warnings)
+    st.markdown(f"### {header} ({len(subset)})")
 
-st.divider()
+    st.dataframe(
+        subset[
+            ["TaskID", "Name", "IssueType", "Description", "SuggestedFix"]
+        ].sort_values("TaskID")
+    )
 
-# Export button
-csv_export = issues.to_csv(index=False).encode("utf-8")
-st.download_button(
-    "Download Full Validation Report (CSV)",
-    data=csv_export,
-    file_name="schedule_validation_results.csv",
-    mime="text/csv",
-)
+    st.divider()
+
+st.info("Fix issues and re-upload the schedule before running CPM.")

@@ -14,38 +14,14 @@ DATE_FORMATS = [
     "%d/%m/%Y",
     "%d/%m/%y",
 ]
-
-def clean_date(value):
-    """Parse multiple MS Project-style dates without warnings."""
-    if pd.isna(value):
+def safe_parse_date(val):
+    """Return Timestamp or NaT. Never returns a Series, never errors."""
+    if pd.isna(val):
         return pd.NaT
-
-    s = str(value).strip()
-
-    # Remove leading weekday like 'Mon', 'Tue', 'Wed'
-    s = re.sub(r"^[A-Za-z]{3}\s+", "", s)
-
-    for fmt in DATE_FORMATS:
-        try:
-            return pd.to_datetime(s, format=fmt)
-        except ValueError:
-            pass
-
-    # Final fallback
-    return pd.to_datetime(s, errors="coerce")
-
-def normalize_dates(df):
-    date_cols = ["Start", "Finish", "Baseline Start", "Baseline Finish"]
-
-    for col in date_cols:
-        if col not in df.columns:
-            df[col] = pd.NaT
-            continue
-
-        df[col] = df[col].apply(clean_date)
-
-    return df
-
+    try:
+        return pd.to_datetime(str(val), errors="coerce")
+    except Exception:
+        return pd.NaT
 # ---------------------------------------------------------
 # FIELD CLEANUP & PREPARATION
 # ---------------------------------------------------------
@@ -106,7 +82,7 @@ def process_uploaded_dataframe(df_input: pd.DataFrame) -> pd.DataFrame:
     date_cols = ["Start", "Finish", "Baseline Start", "Baseline Finish"]
     for col in date_cols:
         if col in df.columns:
-            df[col] = clean_date(df[col])
+            df[col] = df[col].apply(safe_parse_date)
         else:
             # Ensure column exists as NaT if missing
             df[col] = pd.NaT
@@ -482,6 +458,12 @@ def add_intelligence_metrics(df: pd.DataFrame, today=None, near_crit_threshold: 
     df["InterventionValue"] = (
         df["IsCritical_LV"] & (df["PercentComplete"] < 100.0)
     ).astype(int)
+
+    # --------------------------------------------------------------------
+    # 8. Duration Creep (live duration > baseline)
+    # --------------------------------------------------------------------
+    df["DurationCreep"] = df["Duration"] - df["Dur_BL"]
+    df["HasDurationCreep"] = df["DurationCreep"] > 0
 
     return df
 

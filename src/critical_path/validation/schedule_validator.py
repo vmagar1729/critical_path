@@ -1,14 +1,13 @@
 import pandas as pd
+import re
 
-
-# -------------------------------------------------------------------
-# Helper: create a standardized issue entry
-# -------------------------------------------------------------------
-def _issue(task_id, name, category, severity, issue_type, description, suggestion):
+# ------------------------------------------------------------------
+# 🧱 Helper: make a consistent issue dictionary
+# ------------------------------------------------------------------
+def make_issue(task_id, name, severity, issue_type, description, suggestion):
     return {
         "TaskID": task_id,
         "Name": name,
-        "Category": category,
         "Severity": severity,
         "IssueType": issue_type,
         "Description": description,
@@ -16,184 +15,204 @@ def _issue(task_id, name, category, severity, issue_type, description, suggestio
     }
 
 
-# -------------------------------------------------------------------
-# MAIN VALIDATOR
-# -------------------------------------------------------------------
-def validate_schedule(df, status_date=None):
-    """
-    Validates schedule data and returns a dataframe of issues with:
-    TaskID, Name, Category, Severity, IssueType, Description, SuggestedFix.
-    """
+# ------------------------------------------------------------------
+# 🔍 VALID PREDECESSOR REGEX (FINAL VERSION)
+# Supports:
+#  - 5
+#  - 12FS
+#  - 12FS+2
+#  - 12FS+2d
+#  - 5SS-3
+#  - 10, 12FS+2d, 99SS
+# ------------------------------------------------------------------
+PRED_PATTERN = re.compile(
+    r"""
+    ^\s*
+    \d+                                # first task ID
+    (?:FS|SS|FF|SF)?                    # optional link type
+    (?:[+-]\d+\s*d?)?                  # optional lag
+    (?:                                # additional predecessors
+        \s*,\s*
+        \d+
+        (?:FS|SS|FF|SF)?
+        (?:[+-]\d+\s*d?)?
+    )*
+    \s*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
 
+
+def valid_pred_format(cell):
+    if cell is None or pd.isna(cell):
+        return True
+    s = str(cell).strip()
+    if s == "":
+        return True
+    return bool(PRED_PATTERN.match(s))
+
+
+# ------------------------------------------------------------------
+# 🧠 MAIN VALIDATION ENGINE
+# ------------------------------------------------------------------
+def validate_schedule(df):
     issues = []
 
-    # Normalize predecessors
-    def parse_preds(x):
-        if pd.isna(x) or str(x).strip() == "":
-            return []
-        return [int(p) for p in str(x).split(",") if p.strip().isdigit()]
+    # --- Column Normalization for MSP CSV ---
+    rename_map = {
+        "% Complete": "PercentComplete",
+        "Outline Level": "OutlineLevel",
+        "Baseline Start": "BaselineStart",
+        "Baseline Finish": "BaselineFinish",
+    }
+    df = df.rename(columns=rename_map)
 
-    df["PredList"] = df["Predecessors"].apply(parse_preds)
+    # --- Required Columns ---
+    required = [
+        "TaskID", "Name", "Duration", "Start", "Finish",
+        "BaselineStart", "BaselineFinish", "PercentComplete",
+        "Predecessors", "WBS", "OutlineLevel"
+    ]
+    missing = [c for c in required if c not in df.columns]
 
-    task_ids = set(df["TaskID"])
+    if missing:
+        issues.append(
+            make_issue(
+                "N/A", "N/A", "critical", "MissingColumns",
+                f"Missing required columns: {missing}",
+                "In Microsoft Project → Insert Column → Add missing fields before exporting."
+            )
+        )
+        return issues
 
-    # Status Date
-    if status_date is None:
-        status_date = pd.Timestamp.now()
+    # ------------------------------------------------------------------
+    # 1. TaskID validation
+    # ------------------------------------------------------------------
+    if df["TaskID"].isna().any():
+        issues.append(
+            make_issue(
+                None, None, "critical", "TaskIDBlank",
+                "Some TaskID values are blank.",
+                "Ensure TaskID column exists and every task has a numeric ID."
+            )
+        )
 
-    # Build successor list
-    successors = {t: [] for t in task_ids}
-    for _, row in df.iterrows():
-        for p in row["PredList"]:
-            if p in successors:
-                successors[p].append(row["TaskID"])
+    if not pd.to_numeric(df["TaskID"], errors="coerce").notna().all():
+        issues.append(
+            make_issue(
+                None, None, "critical", "TaskIDNonNumeric",
+                "Non-numeric TaskID values found.",
+                "TaskID must be an integer. Remove text values."
+            )
+        )
 
+    dups = df[df["TaskID"].duplicated()]["TaskID"].tolist()
+    if dups:
+        issues.append(
+            make_issue(
+                ", ".join(map(str, dups)), "",
+                "critical", "DuplicateTaskID",
+                f"Duplicate TaskIDs detected: {dups}",
+                "Fix duplicate TaskIDs in MS Project: renumber tasks."
+            )
+        )
 
-    # ============================================================
-    # RULE 1 — Missing Predecessors
-    # ============================================================
-    for _, row in df.iterrows():
-        if len(row["PredList"]) == 0 and row["TaskID"] != df["TaskID"].min():
-            issues.append(_issue(
-                row["TaskID"], row["Name"], "Dependencies", "Warning",
-                "MissingPredecessors",
-                "Task has no predecessors; may start prematurely.",
-                "Verify sequencing and add logical predecessor links."
+    # ------------------------------------------------------------------
+    # 2. Duration validation
+    # ------------------------------------------------------------------
+    if not pd.to_numeric(df["Duration"], errors="coerce").notna().all():
+        issues.append(make_issue(
+            None, None, "error", "DurationInvalid",
+            "Some durations contain text or invalid values.",
+            "Remove values like 'TBD'. Only use numbers."
+        ))
+
+    bad_dur = df[df["Duration"] < 0]
+    for _, row in bad_dur.iterrows():
+        issues.append(make_issue(
+            row["TaskID"], row["Name"],
+            "critical", "NegativeDuration",
+            f"Duration is negative ({row['Duration']}).",
+            "Duration must be positive."
+        ))
+
+    # ------------------------------------------------------------------
+    # 3. Date parsing
+    # ------------------------------------------------------------------
+    for col in ["Start", "Finish", "BaselineStart", "BaselineFinish"]:
+        raw = df[col]
+        parsed = pd.to_datetime(raw, errors="coerce")
+        bad_count = parsed.isna().sum()
+        df[col] = parsed
+
+        if bad_count > 0:
+            issues.append(make_issue(
+                None, None,
+                "error" if bad_count < len(df)/10 else "critical",
+                "InvalidDate",
+                f"{col} has {bad_count} unparseable date(s).",
+                f"Fix invalid {col} values in MS Project before exporting."
             ))
 
+    # ------------------------------------------------------------------
+    # 4. Logical date rules
+    # ------------------------------------------------------------------
+    # Start > Finish
+    bad = df[df["Start"] > df["Finish"]]
+    for _, row in bad.iterrows():
+        issues.append(make_issue(
+            row["TaskID"], row["Name"],
+            "critical", "InvalidDateOrder",
+            "Start date is after Finish date.",
+            "Fix Start/Finish ordering in MSP (Gantt view)."
+        ))
 
-    # ============================================================
-    # RULE 2 — Invalid Predecessor References
-    # ============================================================
+    # BaselineStart > BaselineFinish
+    bad = df[df["BaselineStart"] > df["BaselineFinish"]]
+    for _, row in bad.iterrows():
+        issues.append(make_issue(
+            row["TaskID"], row["Name"],
+            "critical", "InvalidBaselineOrder",
+            "Baseline Finish is before Baseline Start.",
+            "Rebaseline or correct baseline dates."
+        ))
+
+    # ------------------------------------------------------------------
+    # 5. Predecessor validation
+    # ------------------------------------------------------------------
+    all_ids = set(df["TaskID"].astype(int))
+
     for _, row in df.iterrows():
-        for p in row["PredList"]:
-            if p not in task_ids:
-                issues.append(_issue(
-                    row["TaskID"], row["Name"], "Dependencies", "Critical",
-                    "InvalidPredecessor",
-                    f"Predecessor {p} is not a valid TaskID.",
-                    "Correct the predecessor reference."
-                ))
+        tid = row["TaskID"]
+        name = row["Name"]
+        cell = str(row["Predecessors"]).strip()
 
+        if cell in ["", "nan", "None"]:
+            continue
 
-    # ============================================================
-    # RULE 3 — Circular Dependencies
-    # ============================================================
-    graph = {int(t): [] for t in task_ids}
-    for _, row in df.iterrows():
-        for p in row["PredList"]:
-            graph[p].append(row["TaskID"])
-
-    visited = set()
-    stack = set()
-
-    def dfs(node):
-        if node in stack:
-            return True
-        if node in visited:
-            return False
-        visited.add(node)
-        stack.add(node)
-        for nxt in graph[node]:
-            if dfs(nxt):
-                return True
-        stack.remove(node)
-        return False
-
-    for node in task_ids:
-        visited.clear()
-        stack.clear()
-        if dfs(node):
-            issues.append(_issue(
-                node, df.loc[df["TaskID"] == node, "Name"].iloc[0],
-                "Dependencies", "Critical", "CycleDetected",
-                "Circular dependency detected.",
-                "Remove the cycle by correcting task relationships."
+        if not valid_pred_format(cell):
+            issues.append(make_issue(
+                tid, name,
+                "critical", "InvalidPredecessorFormat",
+                f"Invalid predecessor format: '{cell}'",
+                "Valid examples: 5, 12FS, 12FS+2d, 5SS-3, 10, 12FS+1d"
             ))
+            continue
 
+        # Validate referenced IDs exist
+        for part in re.split(r"[;,]", cell):
+            if not part.strip():
+                continue
 
-    # ============================================================
-    # RULE 4 — Orphan Tasks
-    # ============================================================
-    for _, row in df.iterrows():
-        if len(row["PredList"]) == 0 and len(successors[row["TaskID"]]) == 0:
-            issues.append(_issue(
-                row["TaskID"], row["Name"], "Dependencies", "Warning",
-                "OrphanTask",
-                "Task has no predecessors AND no successors.",
-                "If this task matters, add sequencing. Otherwise convert to a note/milestone."
-            ))
+            m = re.match(r"(\d+)", part.strip())
+            if m:
+                pred_id = int(m.group(1))
+                if pred_id not in all_ids:
+                    issues.append(make_issue(
+                        tid, name,
+                        "error", "MissingPredecessorTask",
+                        f"Task depends on missing TaskID {pred_id}.",
+                        "Fix dependency: remove or correct missing TaskID."
+                    ))
 
-
-    # ============================================================
-    # RULE 5 — % Complete Consistency
-    # ============================================================
-    for _, row in df.iterrows():
-        pc = row["PercentComplete"]
-        start = row["Start"]
-        finish = row["Finish"]
-
-        if pc > 0 and pd.isna(start):
-            issues.append(_issue(
-                row["TaskID"], row["Name"], "Dates", "Warning",
-                "MissingStartDate",
-                "Task has progress but Start date is missing.",
-                "Set Start date based on when work actually began."
-            ))
-
-        if pc >= 100 and pd.isna(finish):
-            issues.append(_issue(
-                row["TaskID"], row["Name"], "Dates", "Critical",
-                "MissingFinishDate",
-                "Task marked complete but Finish date is missing.",
-                "Set Finish date to the actual completion date."
-            ))
-
-
-    # ============================================================
-    # RULE 6 — Duration Validation
-    # ============================================================
-    for _, row in df.iterrows():
-        if row["Dur_BL"] < 0:
-            issues.append(_issue(
-                row["TaskID"], row["Name"], "Duration", "Critical",
-                "NegativeDuration",
-                f"Duration is negative: {row['Dur_BL']}.",
-                "Correct the duration to a positive value."
-            ))
-
-        if row["Dur_BL"] == 0 and len(successors[row["TaskID"]]) > 0:
-            issues.append(_issue(
-                row["TaskID"], row["Name"], "Duration", "Warning",
-                "ZeroDurationNonMilestone",
-                "Task has 0 duration but has successors.",
-                "If this is a milestone, convert it. Otherwise add a realistic duration."
-            ))
-
-
-    # ============================================================
-    # RULE 7 — Baseline Date Consistency
-    # ============================================================
-    for _, row in df.iterrows():
-        if row["Baseline Finish"] < row["Baseline Start"]:
-            issues.append(_issue(
-                row["TaskID"], row["Name"], "Dates", "Critical",
-                "BaselineDateError",
-                "Baseline Finish precedes Baseline Start.",
-                "Correct the baseline dates."
-            ))
-
-
-    # ============================================================
-    # DONE
-    # ============================================================
-    return pd.DataFrame(issues)
-
-
-# -------------------------------------------------------------------
-# CSV Export Wrapper
-# -------------------------------------------------------------------
-def validate_and_export(df, out_csv="schedule_validation_results.csv", status_date=None):
-    issues_df = validate_schedule(df, status_date=status_date)
-    issues_df.to_csv(out_csv, index=False)
-    return issues_df
+    return issues

@@ -234,6 +234,44 @@ else:
 
 st.divider()
 
+st.subheader("📈 Duration Creep Overview")
+
+creep_df = df[df["HasDurationCreep"]]
+
+colA, colB, colC = st.columns(3)
+
+with colA:
+    st.metric(
+        "Tasks with Increased Duration",
+        len(creep_df)
+    )
+
+with colB:
+    st.metric(
+        "Total Added Duration (days)",
+        f"{creep_df['DurationCreep'].sum():.1f}"
+    )
+
+with colC:
+    if len(creep_df) > 0:
+        st.metric(
+            "Max Single-Task Creep",
+            f"{creep_df['DurationCreep'].max():.1f} days"
+        )
+    else:
+        st.metric("Max Single-Task Creep", "0")
+
+if len(creep_df) > 0:
+    st.markdown("### Top Offenders (Duration Increased)")
+
+    st.dataframe(
+        creep_df.sort_values("DurationCreep", ascending=False)[
+            ["TaskID", "Name", "Owner", "Dur_BL", "Duration", "DurationCreep"]
+        ]
+    )
+else:
+    st.success("No duration creep detected.")
+
 # -----------------------------------------------------------
 # 3. Can we make it up?
 # -----------------------------------------------------------
