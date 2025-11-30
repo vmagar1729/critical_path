@@ -11,8 +11,6 @@ if PROJECT_ROOT not in sys.path:
 
 # src/critical_path/pages/05_Predictive_Engine.py
 
-from critical_path.bootstrap import *  # ensure imports & sys.path
-
 import streamlit as st
 import pandas as pd
 import numpy as np

@@ -3,6 +3,49 @@ import numpy as np
 from collections import defaultdict, deque
 import re
 
+import pandas as pd
+import numpy as np
+import re
+
+DATE_FORMATS = [
+    "%Y-%m-%d",
+    "%m/%d/%Y",
+    "%m/%d/%y",
+    "%d/%m/%Y",
+    "%d/%m/%y",
+]
+
+def clean_date(value):
+    """Parse multiple MS Project-style dates without warnings."""
+    if pd.isna(value):
+        return pd.NaT
+
+    s = str(value).strip()
+
+    # Remove leading weekday like 'Mon', 'Tue', 'Wed'
+    s = re.sub(r"^[A-Za-z]{3}\s+", "", s)
+
+    for fmt in DATE_FORMATS:
+        try:
+            return pd.to_datetime(s, format=fmt)
+        except ValueError:
+            pass
+
+    # Final fallback
+    return pd.to_datetime(s, errors="coerce")
+
+def normalize_dates(df):
+    date_cols = ["Start", "Finish", "Baseline Start", "Baseline Finish"]
+
+    for col in date_cols:
+        if col not in df.columns:
+            df[col] = pd.NaT
+            continue
+
+        df[col] = df[col].apply(clean_date)
+
+    return df
+
 # ---------------------------------------------------------
 # FIELD CLEANUP & PREPARATION
 # ---------------------------------------------------------
@@ -63,7 +106,7 @@ def process_uploaded_dataframe(df_input: pd.DataFrame) -> pd.DataFrame:
     date_cols = ["Start", "Finish", "Baseline Start", "Baseline Finish"]
     for col in date_cols:
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
+            df[col] = clean_date(df[col])
         else:
             # Ensure column exists as NaT if missing
             df[col] = pd.NaT
