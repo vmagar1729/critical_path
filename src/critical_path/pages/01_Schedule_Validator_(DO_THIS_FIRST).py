@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 
-from critical_path.validation.schedule_validator import validate_schedule
+from critical_path.cpm.schedule_validator import validate_schedule
 
 
 st.set_page_config(page_title="Schedule Validator", layout="wide")

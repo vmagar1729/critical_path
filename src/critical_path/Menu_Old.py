@@ -1,9 +1,9 @@
 import os, sys
 
-# Absolute directory containing Menu.py
+# Absolute directory containing Menu_Old.py
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-# The project root: Menu.py → critical_path → src
+# The project root: Menu_Old.py → critical_path → src
 PROJECT_ROOT = os.path.abspath(os.path.join(APP_ROOT, ".."))
 
 if PROJECT_ROOT not in sys.path:
