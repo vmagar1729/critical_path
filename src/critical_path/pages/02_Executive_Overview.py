@@ -40,17 +40,20 @@ st.title("🧭 Executive Project Summary")
 # -----------------------------------------------------------
 # Upload
 # -----------------------------------------------------------
-uploaded = st.file_uploader("Upload Schedule CSV", type=["csv"])
+# uploaded = st.file_uploader("Upload Schedule CSV", type=["csv"])
+#
+# if uploaded is None:
+#     st.info("Upload a CSV exported from MS Project or your generator.")
+#     st.stop()
+#
+# try:
+#     df_raw = pd.read_csv(uploaded)
+# except Exception as e:
+#     st.error(f"Error parsing CSV: {e}")
+#     st.stop()
 
-if uploaded is None:
-    st.info("Upload a CSV exported from MS Project or your generator.")
-    st.stop()
-
-try:
-    df_raw = pd.read_csv(uploaded)
-except Exception as e:
-    st.error(f"Error parsing CSV: {e}")
-    st.stop()
+# Use the central session schedule
+df_raw = st.session_state.get("schedule_df", None)
 
 # Fix datetime fields
 date_cols = ["Start", "Finish", "Baseline Start", "Baseline Finish"]

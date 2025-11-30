@@ -1,12 +1,9 @@
-import sys
-import os
+import sys, os
 
-# -----------------------------------------------------------
-# Make sure "critical_path" package is importable
-# -----------------------------------------------------------
 THIS_FILE = os.path.abspath(__file__)
-PROJECT_SRC = os.path.abspath(os.path.join(THIS_FILE, "../../../"))
+PROJECT_SRC = os.path.abspath(os.path.join(THIS_FILE, "../../.."))
 
+# PROJECT_SRC should equal: .../critical_path_git/src
 if PROJECT_SRC not in sys.path:
     sys.path.insert(0, PROJECT_SRC)
 
@@ -25,17 +22,24 @@ st.set_page_config(
 st.title("🔍 Schedule Validator")
 st.caption("Ensure your schedule is structurally sound before running analysis.")
 
-uploaded = st.file_uploader("Upload Schedule CSV for Validation", type=["csv"])
+# uploaded = st.file_uploader("Upload Schedule CSV for Validation", type=["csv"])
+#
+# if uploaded is None:
+#     st.info("Upload a CSV to begin validation.")
+#     st.stop()
+#
+# # Read CSV
+# try:
+#     df_raw = pd.read_csv(uploaded)
+# except Exception as e:
+#     st.error(f"Error loading CSV: {e}")
+#     st.stop()
 
-if uploaded is None:
-    st.info("Upload a CSV to begin validation.")
-    st.stop()
+# Use the central session schedule
+df_raw = st.session_state.get("schedule_df", None)
 
-# Read CSV
-try:
-    df_raw = pd.read_csv(uploaded)
-except Exception as e:
-    st.error(f"Error loading CSV: {e}")
+if df_raw is None:
+    st.warning("No schedule loaded. Please upload a schedule on the Home page.")
     st.stop()
 
 # Fix datetimes

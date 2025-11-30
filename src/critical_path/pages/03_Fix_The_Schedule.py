@@ -175,18 +175,21 @@ st.caption(
     "1) Are we behind? 2) Who is responsible? 3) What do we change to recover the date?"
 )
 
-uploaded = st.file_uploader("Upload Schedule CSV (same format as the other pages)", type=["csv"])
+# uploaded = st.file_uploader("Upload Schedule CSV (same format as the other pages)", type=["csv"])
+#
+# if uploaded is None:
+#     st.info("Upload a CSV exported from MS Project or your synthetic generator to see recovery options.")
+#     st.stop()
+#
+# # Read CSV
+# try:
+#     df_raw = pd.read_csv(uploaded)
+# except Exception as e:
+#     st.error(f"Error reading CSV: {e}")
+#     st.stop()
 
-if uploaded is None:
-    st.info("Upload a CSV exported from MS Project or your synthetic generator to see recovery options.")
-    st.stop()
-
-# Read CSV
-try:
-    df_raw = pd.read_csv(uploaded)
-except Exception as e:
-    st.error(f"Error reading CSV: {e}")
-    st.stop()
+# Use the central session schedule
+df_raw = st.session_state.get("schedule_df", None)
 
 # Make sure key date columns are datetime
 for col in ["Start", "Finish", "Baseline Start", "Baseline Finish"]:
