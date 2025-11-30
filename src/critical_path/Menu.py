@@ -1,19 +1,18 @@
 import os, sys
 
-# Absolute path to this file
-THIS_FILE = os.path.abspath(__file__)
+# Absolute directory containing Menu.py
+APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-# Go up ONE directory:
-#   Menu.py → critical_path/ → src/
-PROJECT_SRC = os.path.abspath(os.path.join(THIS_FILE, "../"))
+# The project root: Menu.py → critical_path → src
+PROJECT_ROOT = os.path.abspath(os.path.join(APP_ROOT, ".."))
 
-# Ensure src folder is on PYTHONPATH
-if PROJECT_SRC not in sys.path:
-    sys.path.insert(0, PROJECT_SRC)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 import streamlit as st
 import pandas as pd
-from critical_path.cpm.dual_cpm_csv import process_uploaded_dataframe
+# ✅ IMPORT THE FULL ENGINE, NOT JUST THE CLEANER
+from critical_path.cpm.dual_cpm_csv import compute_dual_cpm_from_df
 
 st.set_page_config(page_title="Project Intelligence Engine", layout="wide")
 
@@ -34,14 +33,17 @@ uploaded = st.file_uploader("Upload Schedule CSV", type=["csv"])
 if uploaded:
     try:
         df_raw = pd.read_csv(uploaded)
-        # Fix datetimes
+
+        # Fix datetimes BEFORE feeding into engine
         for c in ["Start", "Finish", "Baseline Start", "Baseline Finish"]:
             if c in df_raw.columns:
                 df_raw[c] = pd.to_datetime(df_raw[c], errors="coerce")
 
-        df_clean = process_uploaded_dataframe(df_raw)
+        # 🔥 Run full CPM + intelligence pipeline
+        df_cpm = compute_dual_cpm_from_df(df_raw)
 
-        st.session_state["schedule_df"] = df_clean
+        # Store enriched DF for all pages
+        st.session_state["schedule_df"] = df_cpm
         st.session_state["schedule_name"] = uploaded.name
 
         st.success(f"Schedule '{uploaded.name}' loaded successfully!")

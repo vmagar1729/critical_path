@@ -1,5 +1,14 @@
-import os
-import sys
+import os, sys
+
+# Absolute directory containing Menu.py
+APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+# The project root: Menu.py → critical_path → src
+PROJECT_ROOT = os.path.abspath(os.path.join(APP_ROOT, ".."))
+
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from typing import Dict, Any
 
 import streamlit as st
@@ -8,18 +17,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 
-# -----------------------------------------------------------
-# Path setup so `critical_path` is importable
-# -----------------------------------------------------------
-
-THIS_FILE = os.path.abspath(__file__)
-PROJECT_SRC = os.path.abspath(os.path.join(THIS_FILE, "../../../"))
-
-if PROJECT_SRC not in sys.path:
-    sys.path.insert(0, PROJECT_SRC)
-
 from critical_path.cpm.dual_cpm_csv import compute_dual_cpm_from_df
-
 
 # -----------------------------------------------------------
 # Helper: Compute recovery plan
@@ -190,6 +188,10 @@ st.caption(
 
 # Use the central session schedule
 df_raw = st.session_state.get("schedule_df", None)
+
+if df_raw is None:
+    st.warning("No schedule loaded. Please upload a schedule on the Home page.")
+    st.stop()
 
 # Make sure key date columns are datetime
 for col in ["Start", "Finish", "Baseline Start", "Baseline Finish"]:

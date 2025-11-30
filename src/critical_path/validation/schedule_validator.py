@@ -1,7 +1,5 @@
 import pandas as pd
 
-from critical_path.cpm.dual_cpm_csv import compute_dual_cpm_from_df
-
 
 # -------------------------------------------------------------------
 # Helper: create a standardized issue entry

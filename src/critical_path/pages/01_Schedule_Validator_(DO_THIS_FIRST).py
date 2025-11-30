@@ -1,11 +1,13 @@
-import sys, os
+import os, sys
 
-THIS_FILE = os.path.abspath(__file__)
-PROJECT_SRC = os.path.abspath(os.path.join(THIS_FILE, "../../.."))
+# Absolute directory containing Menu.py
+APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-# PROJECT_SRC should equal: .../critical_path_git/src
-if PROJECT_SRC not in sys.path:
-    sys.path.insert(0, PROJECT_SRC)
+# The project root: Menu.py → critical_path → src
+PROJECT_ROOT = os.path.abspath(os.path.join(APP_ROOT, ".."))
+
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 import streamlit as st
 import pandas as pd
